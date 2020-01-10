@@ -16,40 +16,30 @@
  */
 
 #include <algorithm>
+#include <cassert>
 #include <iomanip>
 #include <iostream>
+#include <string>
+#include <string_view>
 #include <vector>
 
 #include <unistd.h>
 
 #include "awd.hh"
 
-Token::Token()
-    : start(0), len(0), line(0), col(0), data(nullptr), data_len(0) {}
-
-Token::~Token() { delete[] data; }
-
-/*
- * file = sentence (sentence)*
- * sentence = ident variable ("," variable)* ";"
- * variable = ident | string
- * string = "\"" .* "\""
- * ident = [a-zA-Z_][a-zA-Z0-9_]
- */
-
 static std::size_t off;
-static std::size_t line = 1;
-static std::size_t col = 1;
 
-static void diag(std::string const &msg) {
-    std::cerr << progname << ": error: " << line << ": " << col << ": " << msg
-              << std::endl;
+static std::vector<Token *> tk;
 
-    std::cerr << std::setw(5) << line << " | ";
+static void diag(std::string const &msg, Token const *t) {
+    std::cerr << progname << ": error: " << t->line << ": " << t->col << ": "
+              << msg << std::endl;
+
+    std::cerr << std::setw(5) << t->line << " | ";
 
     std::size_t beg;
     std::size_t end;
-    for (beg = off; beg != 0 && config_src[beg] != '\n'; --beg) {
+    for (beg = t->start; beg != 0 && config_src[beg] != '\n'; --beg) {
     }
     if (config_src[beg] == '\n') ++beg;
     for (end = beg; config_src[end] != '\n' && config_src[end] != 0; ++end) {
@@ -57,170 +47,176 @@ static void diag(std::string const &msg) {
     std::cerr.write(config_src + beg, end - beg);
     std::cerr << std::endl;
 
-    for (std::size_t i = 0; i < col + 7; ++i) {
+    for (std::size_t i = 0; i < t->col + 7; ++i) {
         std::cerr << " ";
     }
 
-    std::cerr << "^" << std::endl;
+    std::cerr << "^";
+    if (t->len > 0) {
+        for (std::size_t i = 0; i < (std::size_t)t->len - 1; ++i) {
+            std::cerr << "~";
+        }
+    }
+    std::cerr << std::endl;
 
     std::cerr << "Abort." << std::endl;
 
     _exit(1);
 }
 
-static inline void forward() {
-    if (config_src[off] == '\n' || config_src[off] == '\r') {
-        ++line;
-        col = 1;
+static bool forward() {
+    if (tk[off]->ty != TokenType::END_FILE) {
+        ++off;
+        return true;
     } else {
-        ++col;
-    }
-    ++off;
-}
-
-static inline void skip_space() {
-    for (;;) {
-        while (config_src[off] == ' ' || config_src[off] == '\t' ||
-               config_src[off] == '\n' || config_src[off] == '\r')
-            forward();
-        if (config_src[off] == '#') {
-            forward();
-            while (config_src[off] != '\n')
-                forward();
-        } else {
-            break;
-        }
+        return false;
     }
 }
 
-static void parse_ident(std::vector<Token *> &t) {
-    Token *result = new Token;
-    result->ty = TokenType::IDENT;
-    if (('a' <= config_src[off] && config_src[off] <= 'z') ||
-        ('A' <= config_src[off] && config_src[off] <= 'Z') ||
-        config_src[off] == '_') {
-        result->start = off;
-        result->line = line;
-        result->col = col;
-    } else
-        diag("Expected identifier.");
+/*
+ * ident = [a-zA-Z_][a-zA-Z0-9_]
+ */
+static void parse_ident(std::vector<Text *> &t) {
+    AwdVariable *v = new AwdVariable;
+    v->type = VarType::REF;
+    v->ref_count = 1;
+    Token *current_token = tk[off];
+    std::string *name =
+        new std::string(config_src[current_token->start], current_token->len);
+    v->val.ref_name = name;
+
+    Text *text = new Text;
+    text->op = Operation::PUSH;
+    text->arg = v;
+    text->tk = current_token;
+
+    t.push_back(text);
 
     forward();
-
-    while (('a' <= config_src[off] && config_src[off] <= 'z') ||
-           ('A' <= config_src[off] && config_src[off] <= 'Z') ||
-           config_src[off] == '_' ||
-           ('0' <= config_src[off] && config_src[off] <= '9')) {
-        forward();
-    }
-    result->len = off - result->start;
-    t.push_back(result);
 }
 
-static void parse_string(std::vector<Token *> &t) {
-    Token *result = new Token;
-    result->ty = TokenType::STR;
-    result->start = off;
-    result->line = line;
-    result->col = col;
+/*
+ * string-literal = "\"" .* "\""
+ */
+static void parse_string(std::vector<Text *> &t) {}
 
-    if (config_src[off] != '"') diag("Expected `\"'.");
-    forward();
-
-    while (config_src[off] != '"' && config_src[off] != 0) {
-        forward();
+/*
+ * integer-literal = [0-9]+
+ */
+static void parse_int(std::vector<Text *> &t) {
+    AwdVariable *v = new AwdVariable;
+    v->type = VarType::INT;
+    v->ref_count = 1;
+    Token *current_token = tk[off];
+    v->val.int_val = 0;
+    for (std::size_t i = 0; i < (std::size_t)current_token->len; ++i) {
+        assert('0' <= config_src[current_token->start + i] &&
+               config_src[current_token->start + i] <= '9');
+        v->val.int_val *= 10;
+        v->val.int_val += config_src[current_token->start + i] - '0';
     }
+    Text *text = new Text;
+    text->op = Operation::PUSH;
+    text->tk = current_token;
+    text->arg = v;
 
-    if (config_src[off] != '"') diag("Missing terminating `\"'.");
+    t.push_back(text);
+
     forward();
-
-    result->len = off - result->start;
-    if (result->len >= 2) {
-        result->data = new char[result->len];
-        std::copy(config_src + off - result->len + 1, config_src + off - 1,
-                  result->data);
-        result->data_len = result->len - 2;
-    }
-
-    t.push_back(result);
 }
 
-static void parse_variable(std::vector<Token *> &t) {
-    if (config_src[off] == '"')
-        parse_string(t);
-    else
+/*
+ * variable = ident | string-literal | integer-literal
+ */
+static void parse_variable(std::vector<Text *> &t) {
+    if (tk[off]->ty == TokenType::IDENT) {
         parse_ident(t);
-}
-
-static void parse_comma(std::vector<Token *> &t) {
-    Token *result = new Token;
-    result->ty = TokenType::COMMA;
-    result->start = off;
-    result->line = line;
-    result->col = col;
-    if (config_src[off] != ',') diag("Expected comma.");
-    forward();
-    result->len = off - result->start;
-    t.push_back(result);
-}
-
-static void parse_end_of_sentence(std::vector<Token *> &t) {
-    Token *result = new Token;
-    result->ty = TokenType::EOS;
-    result->start = off;
-    result->line = line;
-    result->col = col;
-    if (config_src[off] != ';') diag("Expected semicolon.");
-    forward();
-    result->len = off - result->start;
-    t.push_back(result);
-}
-
-static void parse_sentence(std::vector<Token *> &t) {
-    parse_ident(t);
-    skip_space();
-    if (config_src[off] == ';') {
-        parse_end_of_sentence(t);
-        return;
+    } else if (tk[off]->ty == TokenType::STR) {
+        parse_string(t);
+    } else if (tk[off]->ty == TokenType::INT) {
+        parse_int(t);
+    } else {
+        diag("Expect identifier or string literal.", tk[off]);
     }
-    parse_variable(t);
-    skip_space();
-    do {
-        if (config_src[off] == ',') {
-            parse_comma(t);
-        } else if (config_src[off] == ';') {
-            parse_end_of_sentence(t);
-            break;
-        } else {
-            diag("Expected comma or semicolon in this context.");
+}
+
+/*
+ * sentence = ((ident (variable ("," variable)*)?)? | "exit") ";"
+ */
+static void parse_sentence(std::vector<Text *> &t) {
+    if (tk[off]->ty == TokenType::IDENT) {
+        std::size_t ident_off = off;
+        forward();
+        while (tk[off]->ty != TokenType::END_SENTENCE) {
+            parse_variable(t);
+            if (tk[off]->ty == TokenType::END_SENTENCE)
+                break;
+            else if (tk[off]->ty != TokenType::COMMA) {
+                diag("Expect `,' or `;'.", tk[off]);
+            }
+        }
+        forward();
+
+        std::size_t new_off = off;
+        off = ident_off;
+        parse_ident(t);
+        off = new_off;
+
+    } else if (tk[off]->ty == TokenType::EXIT) {
+        Text *op = new Text;
+        op->op = Operation::HALT;
+        op->tk = tk[off];
+        forward();
+        if (tk[off]->ty != TokenType::INT) {
+            diag("Expect integer literal.", tk[off]);
         }
 
-        skip_space();
-        parse_variable(t);
-        skip_space();
-    } while (true);
+        parse_int(t);
+
+        t.push_back(op);
+
+        if (tk[off]->ty != TokenType::END_SENTENCE) {
+            diag("Expected just 1 argument.", tk[off]);
+        }
+        forward();
+    } else if (tk[off]->ty != TokenType::END_SENTENCE) {
+        diag("Expect identifier.", tk[off]);
+    }
 }
 
-static void parse_file(std::vector<Token *> &t) {
-    skip_space();
-    for (; config_src[off];) {
+/*
+ * program = (sentence)*
+ */
+static void parse_program(std::vector<Text *> &t) {
+    while (tk[off]->ty != TokenType::END_FILE) {
         parse_sentence(t);
-        skip_space();
     }
 
-    Token *eof = new Token;
-    eof->ty = TokenType::END;
-    eof->start = off;
-    eof->line = line;
-    eof->col = col;
-    eof->len = 0;
-    t.push_back(eof);
+    assert(tk[off]->ty == TokenType::END_FILE);
+
+    AwdVariable *v = new AwdVariable;
+    v->type = VarType::INT;
+    v->val.int_val = 0;
+
+    Text *push_retval = new Text;
+    push_retval->op = Operation::PUSH;
+    push_retval->arg = v;
+    push_retval->tk = tk[off];
+    t.push_back(push_retval);
+
+    Text *op = new Text;
+    op->op = Operation::HALT;
+    op->tk = tk[off];
+    t.push_back(op);
 }
 
-std::vector<Token *> *parse() {
-    std::vector<Token *> *result = new std::vector<Token *>();
+std::vector<Text *> *parse(std::vector<Token *> const &token) {
+    off = 0;
 
-    parse_file(*result);
+    tk = token;
+    std::vector<Text *> *executable = new std::vector<Text *>;
 
-    return result;
+    parse_program(*executable);
+
+    return executable;
 }

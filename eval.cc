@@ -19,25 +19,43 @@
 #include <iomanip>
 #include <iostream>
 #include <iterator>
+#include <stack>
 #include <string>
+#include <vector>
 
 #include <unistd.h>
 
 #include "awd.hh"
 
+AwdVariable::AwdVariable() : tk(nullptr), ref_count(0) {}
+
+AwdVariable::~AwdVariable() {
+    if (type == VarType::REF) {
+        delete val.ref_name;
+    } else if (type == VarType::STR) {
+        delete val.str_val;
+    }
+}
+
 static void diag(std::string const &msg, Token const *t) {
     std::cerr << progname << ": error: " << t->line << ": " << t->col << ": "
               << msg << std::endl;
+
+    if (t == nullptr) {
+        std::cerr << "Abort." << std::endl;
+
+        return;
+    }
 
     std::cerr << std::setw(5) << t->line << " | ";
 
     std::size_t beg;
     std::size_t end;
-    for (beg = t->start; beg != 0 && config_src[beg] != '\n'; --beg) {
-    }
+    for (beg = t->start; beg != 0 && config_src[beg] != '\n'; --beg)
+        ;
     if (config_src[beg] == '\n') ++beg;
-    for (end = beg; config_src[end] != '\n' && config_src[end] != 0; ++end) {
-    }
+    for (end = beg; config_src[end] != '\n' && config_src[end] != 0; ++end)
+        ;
     std::cerr.write(config_src + beg, end - beg);
     std::cerr << std::endl;
 
@@ -58,30 +76,41 @@ static void diag(std::string const &msg, Token const *t) {
     _exit(1);
 }
 
-void eval(std::vector<Token *> const &t) {
-    for (auto token = std::begin(t); token != std::end(t); ++token) {
-        if ((*token)->ty == TokenType::END) break;
-        if (!std::strncmp(config_src + (*token)->start, "print",
-                          (*token)->len)) {
-            ++token;
-            for (; (*token)->ty != TokenType::EOS;) {
-                if ((*token)->ty == TokenType::IDENT) {
-                    std::cerr << "Warning: Printing with identifier is not "
-                                 "implemented."
-                              << std::endl;
-                } else if ((*token)->ty == TokenType::STR) {
-                    std::cout.write((*token)->data, (*token)->data_len);
-                    std::cout << std::endl;
-                }
-                ++token;
-                if ((*token)->ty == TokenType::COMMA)
-                    ++token;
-                else if ((*token)->ty == TokenType::EOS) {
-                    break;
-                }
-            }
-        } else {
-            diag("Undefined identifier.", (*token));
+static std::stack<AwdVariable *> stack;
+
+AwdVariable *operation_pop() {
+    AwdVariable *top = stack.top();
+    stack.pop();
+
+    return top;
+}
+
+void operation_push(AwdVariable &v) { stack.push(&v); }
+
+int operation_halt() {
+    AwdVariable *arg = operation_pop();
+    if (arg->type != VarType::INT)
+        diag("Mismatched type (expected int value.)", arg->tk);
+    int val = arg->val.int_val;
+    --arg->ref_count;
+    if (arg->ref_count < 1) delete arg;
+
+    return val;
+}
+
+int eval(std::vector<Text *> const &executable) {
+    for (auto text = std::begin(executable); text != std::end(executable);
+         ++text) {
+        switch ((*text)->op) {
+        case Operation::PUSH:
+            operation_push(*(*text)->arg);
+            break;
+        case Operation::HALT:
+            return operation_halt();
+            break;
         }
     }
+
+    /* Should not reach. */
+    return 1;
 }

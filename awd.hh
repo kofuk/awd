@@ -18,29 +18,53 @@
 #ifndef AWD_HH
 #define AWD_HH
 
+#include <set>
 #include <string>
 #include <vector>
 
 static std::string progname = "awd";
 
-enum class TokenType { IDENT, STR, COMMA, EOS, END };
+enum class TokenType { IDENT, STR, INT, COMMA, EXIT, END_SENTENCE, END_FILE };
 
 struct Token {
-    Token();
-    ~Token();
-
     TokenType ty;
     std::size_t start;
     std::ptrdiff_t len;
     std::size_t line;
     std::size_t col;
-    char *data;
-    std::size_t data_len;
+};
+
+enum class VarType { REF, INT, STR };
+
+struct AwdVariable {
+    union Value {
+        std::string *ref_name;
+        int int_val;
+        std::string *str_val;
+    };
+
+    VarType type;
+    Value val;
+    Token *tk;
+
+    int ref_count;
+
+    AwdVariable();
+    ~AwdVariable();
+};
+
+enum class Operation { HALT, PUSH };
+
+struct Text {
+    Operation op;
+    Token *tk;
+    AwdVariable *arg;
 };
 
 extern char *config_src;
 
-std::vector<Token *> *parse();
-void eval(std::vector<Token *> const &);
+std::vector<Token *> *tokenize();
+std::vector<Text *> *parse(std::vector<Token *> const &);
+int eval(std::vector<Text *> const &executable);
 
 #endif

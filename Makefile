@@ -15,9 +15,9 @@
 
 CXXFLAGS = -Wall -Wextra -g3
 
-awd: eval.o main.o parse.o
-	$(CXX) $(CXXFLAGS) -o awd eval.o main.o parse.o
+awd: eval.o main.o parse.o tokenize.o
+	$(CXX) $(CXXFLAGS) -o awd eval.o main.o parse.o tokenize.o
 
 .PHONY: clean
 clean:
-	$(RM) eval.o main.o parse.o awd
+	$(RM) eval.o main.o parse.o tokenize.o awd

@@ -54,15 +54,18 @@ int main() {
     in.read(config_src, st.st_blksize);
     config_src[st.st_blksize] = 0;
 
-    std::vector<Token *> *tokens = parse();
+    std::vector<Token *> *tokens = tokenize();
+    std::vector<Text *> *executable = parse(*tokens);
+    int result = eval(*executable);
 
-    eval(*tokens);
+    for (auto itr = std::begin(*executable); itr != std::end(*executable); ++itr)
+        delete *itr;
+    delete executable;
 
     for (auto itr = std::begin(*tokens); itr != std::end(*tokens); ++itr)
         delete *itr;
-
     delete tokens;
     delete[] config_src;
 
-    return 0;
+    return result;
 }
